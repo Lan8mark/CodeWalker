@@ -30,7 +30,8 @@ namespace CodeWalker
         private MainTreeFolder RootFolder;
         private List<MainTreeFolder> ExtraRootFolders = new List<MainTreeFolder>();
         private MainTreeFolder CurrentFolder;
-        private List<MainListItem> CurrentFiles;
+        private List<MainListItem> CurrentFiles = new List<MainListItem>();
+        private List<MainListItem> _currentFolderCache = new List<MainListItem>();
         private bool FirstRefreshed = false;
         private List<MainListItem> CopiedFiles = new List<MainListItem>();
         private bool DropFolderCreated;
@@ -1269,29 +1270,56 @@ namespace CodeWalker
         }
         private void RefreshMainListView()
         {
-            MainListView.VirtualListSize = 0;
-            if (CurrentFolder != null)
+            MainListView.BeginUpdate();
+            try
             {
-                if (!CurrentFolder.IsSearchResults)
+                MainListView.VirtualListSize = 0;
+                if (CurrentFolder != null)
                 {
-                    CurrentFolder.ListItems = null; //makes sure to rebuild the current files list
-                }
-                CurrentFiles = CurrentFolder.GetListItems();
+                    if (!CurrentFolder.IsSearchResults)
+                    {
+                        CurrentFolder.ListItems = null; //makes sure to rebuild the current files list
+                    }
 
-                foreach (var file in CurrentFiles) //cache all the data for use by the list view.
+                    var folderItems = CurrentFolder.GetListItems() ?? new List<MainListItem>();
+                    if (CurrentFolder.IsSearchResults)
+                    {
+                        _currentFolderCache = folderItems;
+                        CurrentFiles = folderItems;
+                    }
+                    else
+                    {
+                        _currentFolderCache = new List<MainListItem>(folderItems);
+                        CurrentFiles = new List<MainListItem>(_currentFolderCache);
+                    }
+
+                    foreach (var file in _currentFolderCache) //cache all the data for use by the list view.
+                    {
+                        file.CacheDetails(this);
+                    }
+
+                    if (SearchFilterButton.Checked)
+                    {
+                        ApplyLocalFilter(SearchTextBox.Text);
+                    }
+                    else
+                    {
+                        SortMainListView(SortColumnIndex, SortDirection); //sorts CurrentItems and sets VirtualListSize
+                    }
+
+                    ShowMainListViewPathColumn(CurrentFolder.IsSearchResults);
+                }
+                else
                 {
-                    file.CacheDetails(this);
+                    _currentFolderCache = new List<MainListItem>();
+                    UpdateSelectionUI();
+
+                    ShowMainListViewPathColumn(false);
                 }
-
-                SortMainListView(SortColumnIndex, SortDirection); //sorts CurrentItems and sets VirtualListSize
-
-                ShowMainListViewPathColumn(CurrentFolder.IsSearchResults);
             }
-            else
+            finally
             {
-                UpdateSelectionUI();
-
-                ShowMainListViewPathColumn(false);
+                MainListView.EndUpdate();
             }
         }
         private void SortMainListView(int col, SortOrder dir)
@@ -1392,37 +1420,52 @@ namespace CodeWalker
         public void Filter(string text)
         {
             SearchGlobalButton.Checked = false;
-            SearchFilterButton.Checked = !SearchFilterButton.Checked;
+            SearchFilterButton.Checked = true;
             SearchTextBox.Text = text;
             SearchButton.Image = SearchFilterButton.Image;
             SearchButton.Text = SearchFilterButton.Text;
             SearchButton.Checked = SearchFilterButton.Checked;
 
-            FilterUpdate();
+            ApplyLocalFilter(text);
         }
         private void FilterUpdate()
         {
-            var term = SearchTextBox.Text;
-            var terms = term.Split(new[] { '*' }, StringSplitOptions.RemoveEmptyEntries);
-            bool filterenabled = SearchFilterButton.Checked;
-            if (filterenabled && (terms.Length > 0) && (!string.IsNullOrEmpty(term)))
+            ApplyLocalFilter(SearchTextBox.Text);
+        }
+
+        private void ApplyLocalFilter(string text)
+        {
+            if (_currentFolderCache == null)
             {
-                var origfiles = CurrentFolder.GetListItems();
-                var filtered = new List<MainListItem>();
-                foreach (var file in origfiles)
+                _currentFolderCache = new List<MainListItem>();
+            }
+
+            var normalized = (text ?? string.Empty).ToLowerInvariant();
+            var hasQuery = !string.IsNullOrWhiteSpace(normalized);
+            var source = _currentFolderCache;
+
+            MainListView.BeginUpdate();
+            try
+            {
+                if ((CurrentFolder != null) && CurrentFolder.IsSearchResults && Searching)
                 {
-                    if (MainTreeFolder.SearchMatch(file.Name.ToLowerInvariant(), terms))
-                    {
-                        filtered.Add(file);
-                    }
+                    CurrentFiles = source;
                 }
-                CurrentFiles = filtered;
+                else if (SearchFilterButton.Checked && hasQuery)
+                {
+                    CurrentFiles = source.Where(f => f.Name?.IndexOf(normalized, StringComparison.OrdinalIgnoreCase) >= 0).ToList();
+                }
+                else
+                {
+                    CurrentFiles = (CurrentFolder != null) && CurrentFolder.IsSearchResults ? source : new List<MainListItem>(source);
+                }
+
+                SortMainListView(SortColumnIndex, SortDirection); //sorts CurrentItems and sets VirtualListSize
             }
-            else
+            finally
             {
-                CurrentFiles = CurrentFolder.GetListItems();
+                MainListView.EndUpdate();
             }
-            SortMainListView(SortColumnIndex, SortDirection); //sorts CurrentItems and sets VirtualListSize
         }
 
 
@@ -4162,7 +4205,7 @@ namespace CodeWalker
         {
             if (SearchFilterButton.Checked)
             {
-                FilterUpdate();
+                ApplyLocalFilter(SearchTextBox.Text);
             }
         }
 
@@ -4175,6 +4218,11 @@ namespace CodeWalker
         {
             if (SearchGlobalButton.Checked)
             {
+                if (SearchFilterButton.Checked)
+                {
+                    SearchFilterButton.Checked = false;
+                    ApplyLocalFilter(SearchTextBox.Text);
+                }
                 Search(SearchTextBox.Text);
             }
             else
@@ -4185,6 +4233,11 @@ namespace CodeWalker
 
         private void SearchGlobalButton_Click(object sender, EventArgs e)
         {
+            if (SearchFilterButton.Checked)
+            {
+                SearchFilterButton.Checked = false;
+                ApplyLocalFilter(SearchTextBox.Text);
+            }
             Search(SearchTextBox.Text);
         }
 
